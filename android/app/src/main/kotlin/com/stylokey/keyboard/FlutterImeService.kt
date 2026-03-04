@@ -1,6 +1,10 @@
 package com.stylokey.keyboard
 
 import android.inputmethodservice.InputMethodService
+import android.media.AudioManager
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
@@ -71,6 +75,24 @@ class FlutterImeService : InputMethodService() {
                             )
                             result.success(null)
                         }
+                        "vibrate" -> {
+                            @Suppress("DEPRECATION")
+                            val vibrator = getSystemService(VIBRATOR_SERVICE) as? Vibrator
+                            vibrator?.let {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                    it.vibrate(VibrationEffect.createOneShot(25, VibrationEffect.DEFAULT_AMPLITUDE))
+                                } else {
+                                    @Suppress("DEPRECATION")
+                                    it.vibrate(25)
+                                }
+                            }
+                            result.success(null)
+                        }
+                        "playKeySound" -> {
+                            val am = getSystemService(AUDIO_SERVICE) as? AudioManager
+                            am?.playSoundEffect(AudioManager.FX_KEYPRESS_STANDARD, -1f)
+                            result.success(null)
+                        }
                         else -> result.notImplemented()
                     }
                 }
@@ -89,7 +111,7 @@ class FlutterImeService : InputMethodService() {
 
         // ── Wrap in a FrameLayout with a fixed keyboard height ──────────────
         val density = resources.displayMetrics.density
-        val keyboardHeight = (285 * density).toInt()
+        val keyboardHeight = (317 * density).toInt()
 
         return FrameLayout(this).apply {
             setBackgroundColor(0xFFD1D5DB.toInt())
