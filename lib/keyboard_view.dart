@@ -962,6 +962,8 @@ class _KeyRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 키가 많을수록 가로 패딩 축소 (영문 10개 → 1px, 한글 5개 → 3px)
+    final keyPad = keys.length >= 8 ? 1.0 : 3.0;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 4),
       child: Row(
@@ -973,6 +975,7 @@ class _KeyRow extends StatelessWidget {
                     onTapDown: onKeyDown,
                     theme: theme,
                     bold: bold,
+                    horizontalPad: keyPad,
                   ),
                 ))
             .toList(),
@@ -987,6 +990,7 @@ class _CharKey extends StatefulWidget {
   final VoidCallback onTapDown;
   final KeyboardTheme theme;
   final bool bold;
+  final double horizontalPad;
 
   const _CharKey({
     required this.label,
@@ -994,6 +998,7 @@ class _CharKey extends StatefulWidget {
     required this.onTapDown,
     required this.theme,
     this.bold = false,
+    this.horizontalPad = 3,
   });
 
   @override
@@ -1080,7 +1085,7 @@ class _CharKeyState extends State<_CharKey>
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 3),
+      padding: EdgeInsets.symmetric(horizontal: widget.horizontalPad),
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTapDown: (_) {

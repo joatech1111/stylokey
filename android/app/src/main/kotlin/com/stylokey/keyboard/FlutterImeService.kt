@@ -7,6 +7,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
 import android.view.inputmethod.EditorInfo
 import android.widget.FrameLayout
 import io.flutter.embedding.android.FlutterTextureView
@@ -124,16 +125,28 @@ class FlutterImeService : InputMethodService() {
         val density = resources.displayMetrics.density
         val keyboardHeight = (350 * density).toInt()
 
-        return FrameLayout(this).apply {
-            setBackgroundColor(0xFFD1D5DB.toInt())
-            addView(
-                flutterView,
-                FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    keyboardHeight
-                )
-            )
+        // Android 15 edge-to-edge: 네비게이션 바 높이만큼 하단 패딩 추가
+        val container = object : FrameLayout(this) {
+            override fun onApplyWindowInsets(insets: WindowInsets): WindowInsets {
+                val navBottom = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    insets.getInsets(WindowInsets.Type.navigationBars()).bottom
+                } else {
+                    @Suppress("DEPRECATION")
+                    insets.systemWindowInsetBottom
+                }
+                setPadding(0, 0, 0, navBottom)
+                return insets
+            }
         }
+        container.setBackgroundColor(0xFFD1D5DB.toInt())
+        container.addView(
+            flutterView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                keyboardHeight
+            )
+        )
+        return container
     }
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
