@@ -173,8 +173,8 @@ class KeyboardView extends StatefulWidget {
 }
 
 class _KeyboardViewState extends State<KeyboardView> {
-  KeyboardMode _mode = KeyboardMode.english;
-  KeyboardMode _modeBeforeEmoji = KeyboardMode.english;
+  KeyboardMode _mode = KeyboardMode.korean;
+  KeyboardMode _modeBeforeEmoji = KeyboardMode.korean;
   bool _capsLock = false;
   final KoreanComposer _composer = KoreanComposer();
 
@@ -186,6 +186,12 @@ class _KeyboardViewState extends State<KeyboardView> {
 
   // ── Emoji ─────────────────────────────────────────────────────────────────
   int _emojiCategoryIndex = 0;
+
+  // ── 쌍자음 ────────────────────────────────────────────────────────────────
+  bool _ssangMode = false;
+  static const Map<String, String> _ssangMap = {
+    'ㄱ': 'ㄲ', 'ㄷ': 'ㄸ', 'ㅂ': 'ㅃ', 'ㅅ': 'ㅆ', 'ㅈ': 'ㅉ',
+  };
 
   // ── Prediction ────────────────────────────────────────────────────────────
   List<String> _wordHistory = [];
@@ -227,6 +233,18 @@ class _KeyboardViewState extends State<KeyboardView> {
   void initState() {
     super.initState();
     _loadSettings();
+    _channel.setMethodCallHandler(_handleNativeCall);
+  }
+
+  Future<dynamic> _handleNativeCall(MethodCall call) async {
+    if (call.method == 'reset') {
+      _composer.reset();
+      _wordBuffer = '';
+      _lastKey = null;
+      _tapCount = 0;
+      _ssangMode = false;
+      setState(() {});
+    }
   }
 
   Future<void> _loadSettings() async {
@@ -319,7 +337,7 @@ class _KeyboardViewState extends State<KeyboardView> {
   static const _englishRows = [
     ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'],
     ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', "'"],
-    ['@', 'z', 'x', 'c', 'v', 'b', 'n', 'm', '?', ',!'],
+    ['@', 'z', 'x', 'c', 'v', 'b', 'n', 'm', '?', '.,'],
   ];
 
   // ── IME communication ─────────────────────────────────────────────────────
@@ -350,12 +368,35 @@ class _KeyboardViewState extends State<KeyboardView> {
 
   void _onKey(String key) {
     if (_mode == KeyboardMode.korean) {
-      _handleKorean(key);
+      String actualKey = key;
+      if (_ssangMode && _ssangMap.containsKey(key)) {
+        actualKey = _ssangMap[key]!;
+        _ssangMode = false; // 한 글자 입력 후 자동 해제
+      }
+      _handleKorean(actualKey);
+    } else if (key == '.,') {
+      _handleDotComma();
     } else {
+      _lastKey = null; // ., 더블탭 리셋
       final toSend = (_mode == KeyboardMode.english && _capsLock)
           ? key.toUpperCase()
           : key;
       _commitText(toSend);
+    }
+  }
+
+  Future<void> _handleDotComma() async {
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final isDouble = _lastKey == '.,' && (nowMs - _lastKeyMs) < _doubleTapMs;
+    _lastKey = '.,';
+    _lastKeyMs = nowMs;
+
+    if (isDouble) {
+      // 두 번째 탭: 앞의 '.'를 지우고 ','로 교체
+      await _deleteBack();
+      await _commitText(',');
+    } else {
+      await _commitText('.');
     }
   }
 
@@ -462,9 +503,13 @@ class _KeyboardViewState extends State<KeyboardView> {
   Future<void> _commitKoreanAndSwitch(void Function() switchFn) async {
     if (_mode == KeyboardMode.korean) {
       final text = _composer.commitAll();
-      if (text.isNotEmpty) await _commitText(text);
-      await _setComposing('');
+      _trackCommit(text);
+      // 원자적으로 composing commit + 종료 (두 단계 비동기 타이밍 문제 방지)
+      await _channel.invokeMethod('switchModeCommit', {'text': text});
     }
+    _ssangMode = false;
+    _lastKey = null;  // 더블탭 상태 초기화 (모드 전환 후 오입력 방지)
+    _tapCount = 0;
     setState(switchFn);
   }
 
@@ -485,6 +530,8 @@ class _KeyboardViewState extends State<KeyboardView> {
 
   void _onLangToggle() {
     if (_mode == KeyboardMode.emoji) {
+      _lastKey = null;
+      _tapCount = 0;
       setState(() => _mode = _modeBeforeEmoji);
       return;
     }
@@ -499,6 +546,8 @@ class _KeyboardViewState extends State<KeyboardView> {
 
   void _toggleEmoji() {
     if (_mode == KeyboardMode.emoji) {
+      _lastKey = null;
+      _tapCount = 0;
       setState(() => _mode = _modeBeforeEmoji);
     } else {
       _commitKoreanAndSwitch(() {
@@ -512,24 +561,31 @@ class _KeyboardViewState extends State<KeyboardView> {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 317,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        color: _theme.background,
-        child: _showingSettings
-            ? _buildSettingsPanel()
-            : Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (_mode != KeyboardMode.emoji) _buildSuggestionBar(),
-                  if (_mode == KeyboardMode.emoji)
-                    Expanded(child: _buildEmojiGrid())
-                  else
-                    ..._buildMainRows(),
-                  _buildBottomRow(),
-                ],
-              ),
+    // suggestion bar(32) + keys area(318) = 350 total
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      color: _theme.background,
+      child: SizedBox(
+        height: 350,
+        child: Column(
+          children: [
+            if (!_showingSettings && _mode != KeyboardMode.emoji)
+              _buildSuggestionBar(), // 32px — 키 영역과 별도
+            Expanded(
+              child: _showingSettings
+                  ? _buildSettingsPanel()
+                  : Column(
+                      children: [
+                        if (_mode == KeyboardMode.emoji)
+                          Expanded(child: _buildEmojiGrid())
+                        else
+                          ..._buildMainRows(),
+                        _buildBottomRow(),
+                      ],
+                    ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -765,50 +821,73 @@ class _KeyboardViewState extends State<KeyboardView> {
       KeyboardMode.emoji => _koreanRows,
     };
     return rows
-        .map((row) => _KeyRow(
-              keys: row,
-              caps: _capsLock && _mode == KeyboardMode.english,
-              onKey: _onKey,
-              onKeyDown: _triggerFeedback,
-              theme: _theme,
+        .map((row) => Expanded(
+              child: _KeyRow(
+                keys: row,
+                caps: _capsLock && _mode == KeyboardMode.english,
+                bold: _mode == KeyboardMode.korean,
+                onKey: _onKey,
+                onKeyDown: _triggerFeedback,
+                theme: _theme,
+              ),
             ))
         .toList();
   }
 
   Widget _buildBottomRow() {
     final isEmoji = _mode == KeyboardMode.emoji;
-    final langLabel = switch (_mode) {
-      KeyboardMode.english => 'Aa',
-      KeyboardMode.korean => 'ㄱ',
-      KeyboardMode.number => '가',
-      KeyboardMode.emoji => 'Aa',
-    };
+    final isKorean = _mode == KeyboardMode.korean;
+    final isEnglish = _mode == KeyboardMode.english;
+    final langLabel = isEnglish ? 'EN' : '한';
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
       child: Row(
         children: [
           _ActionKey(
+            onTap: _onLangToggle,
+            onTapDown: _triggerFeedback,
+            theme: _theme,
+            flex: 2,
+            child: Text(
+              langLabel,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: _theme.actionKeyText,
+              ),
+            ),
+          ),
+          _ActionKey(
             onTap: _onRotate,
             onTapDown: _triggerFeedback,
             theme: _theme,
-            flex: 1,
+            flex: 2,
             child:
                 Icon(Icons.autorenew, size: 20, color: _theme.actionKeyText),
           ),
-          if (!isEmoji)
-            _ActionKey(
-              onTap: _mode == KeyboardMode.english ? _onCaps : _onLangToggle,
-              onTapDown: _triggerFeedback,
-              theme: _theme,
-              flex: 1,
-              active: _mode == KeyboardMode.english && _capsLock,
-              child: Text(langLabel,
-                  style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: _theme.actionKeyText)),
-            ),
+          // 쌍자음(한국어) / 대문자(영어) / 빈칸(그 외)
+          _ActionKey(
+            onTap: isKorean
+                ? () => setState(() => _ssangMode = !_ssangMode)
+                : isEnglish
+                    ? _onCaps
+                    : () {},
+            onTapDown: (isKorean || isEnglish) ? _triggerFeedback : () {},
+            theme: _theme,
+            flex: 2,
+            active: isKorean ? _ssangMode : isEnglish ? _capsLock : false,
+            child: isKorean
+                ? Text('쌍',
+                    style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: _theme.actionKeyText))
+                : isEnglish
+                    ? Icon(Icons.keyboard_capslock,
+                        size: 20, color: _theme.actionKeyText)
+                    : const SizedBox(),
+          ),
           _ActionKey(
             onTap: () => _onKey(' '),
             onTapDown: _triggerFeedback,
@@ -840,7 +919,7 @@ class _KeyboardViewState extends State<KeyboardView> {
             onTap: _sendAction,
             onTapDown: _triggerFeedback,
             theme: _theme,
-            flex: 1,
+            flex: 2,
             child: Text('GO',
                 style: TextStyle(
                     fontSize: 14,
@@ -851,7 +930,7 @@ class _KeyboardViewState extends State<KeyboardView> {
             onTap: _onDelete,
             onTapDown: _triggerFeedback,
             theme: _theme,
-            flex: 1,
+            flex: 2,
             repeatOnHold: true,
             child: Icon(Icons.backspace_outlined,
                 size: 20, color: _theme.actionKeyText),
@@ -867,6 +946,7 @@ class _KeyboardViewState extends State<KeyboardView> {
 class _KeyRow extends StatelessWidget {
   final List<String> keys;
   final bool caps;
+  final bool bold;
   final void Function(String) onKey;
   final VoidCallback onKeyDown;
   final KeyboardTheme theme;
@@ -877,6 +957,7 @@ class _KeyRow extends StatelessWidget {
     required this.onKey,
     required this.onKeyDown,
     required this.theme,
+    this.bold = false,
   });
 
   @override
@@ -891,6 +972,7 @@ class _KeyRow extends StatelessWidget {
                     onTap: () => onKey(k),
                     onTapDown: onKeyDown,
                     theme: theme,
+                    bold: bold,
                   ),
                 ))
             .toList(),
@@ -904,26 +986,46 @@ class _CharKey extends StatefulWidget {
   final VoidCallback onTap;
   final VoidCallback onTapDown;
   final KeyboardTheme theme;
+  final bool bold;
 
   const _CharKey({
     required this.label,
     required this.onTap,
     required this.onTapDown,
     required this.theme,
+    this.bold = false,
   });
 
   @override
   State<_CharKey> createState() => _CharKeyState();
 }
 
-class _CharKeyState extends State<_CharKey> {
-  bool _pressed = false;
+class _CharKeyState extends State<_CharKey>
+    with SingleTickerProviderStateMixin {
   OverlayEntry? _popupEntry;
+  late final AnimationController _ctrl;
+  late final CurvedAnimation _curve;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 55),
+      reverseDuration: const Duration(milliseconds: 260),
+    );
+    _curve = CurvedAnimation(
+      parent: _ctrl,
+      curve: Curves.easeIn,
+      reverseCurve: Curves.easeOutBack,
+    );
+  }
 
   @override
   void dispose() {
+    _curve.dispose();
+    _ctrl.dispose();
     _popupEntry?.remove();
-    _popupEntry = null;
     super.dispose();
   }
 
@@ -933,7 +1035,6 @@ class _CharKeyState extends State<_CharKey> {
     final overlay = Overlay.of(context);
     final pos = box.localToGlobal(Offset.zero);
     final sz = box.size;
-    // Clamp so popup never goes above the Flutter view top
     final popupTop = (pos.dy - 66).clamp(4.0, double.infinity);
     _popupEntry = OverlayEntry(
       builder: (_) => Positioned(
@@ -981,47 +1082,61 @@ class _CharKeyState extends State<_CharKey> {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 3),
       child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
         onTapDown: (_) {
           widget.onTapDown();
-          setState(() => _pressed = true);
+          _ctrl.forward();
           _showPopup();
         },
         onTapUp: (_) {
-          setState(() => _pressed = false);
+          widget.onTap(); // onTap 딜레이 없이 즉시 실행
+          _ctrl.reverse();
           _hidePopup();
         },
         onTapCancel: () {
-          setState(() => _pressed = false);
+          _ctrl.reverse();
           _hidePopup();
         },
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 60),
-          height: 65,
-          transform: _pressed
-              ? (Matrix4.identity()..translate(0.0, 1.5))
-              : Matrix4.identity(),
-          decoration: BoxDecoration(
-            color:
-                _pressed ? widget.theme.charKeyPressed : widget.theme.charKey,
-            borderRadius: BorderRadius.circular(5),
-            boxShadow: _pressed
-                ? const []
-                : const [
+        child: AnimatedBuilder(
+          animation: _curve,
+          builder: (ctx, child) {
+            final t = _curve.value; // may go slightly < 0 during easeOutBack
+            final tC = t.clamp(0.0, 1.0);
+            // scale < 1 when pressed, bounces slightly above 1 on release
+            final scale = 1.0 - 0.08 * t;
+            return Transform(
+              transform: Matrix4.identity()
+                ..translate(0.0, 3.0 * tC)
+                ..scale(scale),
+              alignment: Alignment.center,
+              child: Container(
+                height: double.infinity,
+                decoration: BoxDecoration(
+                  color: Color.lerp(
+                    widget.theme.charKey,
+                    widget.theme.charKeyPressed,
+                    tC,
+                  ),
+                  borderRadius: BorderRadius.circular(5),
+                  boxShadow: [
                     BoxShadow(
-                      color: Color(0x55000000),
-                      offset: Offset(0, 2),
-                      blurRadius: 2,
+                      color: Color.fromRGBO(0, 0, 0, 0.33 * (1 - tC)),
+                      offset: Offset(0, (1 - tC) * 3),
+                      blurRadius: (1 - tC) * 3,
                     ),
                   ],
-          ),
-          alignment: Alignment.center,
+                ),
+                alignment: Alignment.center,
+                child: child,
+              ),
+            );
+          },
           child: Text(
             widget.label,
             style: TextStyle(
               fontSize: 18,
               color: widget.theme.charKeyText,
-              fontWeight: FontWeight.w400,
+              fontWeight: widget.bold ? FontWeight.w700 : FontWeight.w400,
             ),
           ),
         ),
@@ -1053,27 +1168,49 @@ class _ActionKey extends StatefulWidget {
   State<_ActionKey> createState() => _ActionKeyState();
 }
 
-class _ActionKeyState extends State<_ActionKey> {
+class _ActionKeyState extends State<_ActionKey>
+    with SingleTickerProviderStateMixin {
   bool _pressed = false;
+  bool _repeatFired = false; // repeat이 실제로 발동됐는지 추적
   Timer? _repeatTimer;
+  late final AnimationController _ctrl;
+  late final CurvedAnimation _curve;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 55),
+      reverseDuration: const Duration(milliseconds: 220),
+    );
+    _curve = CurvedAnimation(
+      parent: _ctrl,
+      curve: Curves.easeIn,
+      reverseCurve: Curves.easeOutBack,
+    );
+  }
 
   @override
   void dispose() {
+    _curve.dispose();
+    _ctrl.dispose();
     _repeatTimer?.cancel();
     super.dispose();
   }
 
   void _startRepeat() {
-    // 400ms 후 첫 반복 시작, 이후 50ms 간격으로 반복
+    _repeatFired = false;
     _repeatTimer = Timer(const Duration(milliseconds: 400), () {
       if (!mounted) return;
+      _repeatFired = true;
       widget.onTap();
       _repeatTimer = Timer.periodic(const Duration(milliseconds: 50), (_) {
         if (!mounted) {
           _repeatTimer?.cancel();
           return;
         }
-        widget.onTapDown(); // haptic
+        widget.onTapDown();
         widget.onTap();
       });
     });
@@ -1084,13 +1221,13 @@ class _ActionKeyState extends State<_ActionKey> {
     _repeatTimer = null;
   }
 
-  Color get _bgColor {
-    if (_pressed) {
-      return widget.active
-          ? widget.theme.activePressedKey
-          : widget.theme.actionKeyPressed;
-    }
-    return widget.active ? widget.theme.activeKey : widget.theme.actionKey;
+  Color _bgColor(double tC) {
+    final base =
+        widget.active ? widget.theme.activeKey : widget.theme.actionKey;
+    final pressed = widget.active
+        ? widget.theme.activePressedKey
+        : widget.theme.actionKeyPressed;
+    return Color.lerp(base, pressed, tC)!;
   }
 
   @override
@@ -1100,43 +1237,60 @@ class _ActionKeyState extends State<_ActionKey> {
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 3),
         child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
           onTapDown: (_) {
             widget.onTapDown();
             setState(() => _pressed = true);
+            _ctrl.forward();
             if (widget.repeatOnHold) _startRepeat();
           },
           onTapUp: (_) {
             setState(() => _pressed = false);
-            if (widget.repeatOnHold) _cancelRepeat();
+            _ctrl.reverse();
+            if (widget.repeatOnHold) {
+              final didRepeat = _repeatFired;
+              _cancelRepeat();
+              if (!didRepeat) widget.onTap(); // 짧은 탭 → 1회 실행
+            } else {
+              widget.onTap(); // 즉시 실행
+            }
           },
           onTapCancel: () {
             setState(() => _pressed = false);
+            _ctrl.reverse();
             if (widget.repeatOnHold) _cancelRepeat();
           },
-          onTap: widget.onTap,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 60),
-            height: 65,
-            transform: _pressed
-                ? (Matrix4.identity()..translate(0.0, 1.5))
-                : Matrix4.identity(),
-            decoration: BoxDecoration(
-              color: _bgColor,
-              borderRadius: BorderRadius.circular(5),
-              boxShadow: _pressed
-                  ? const []
-                  : const [
+          child: AnimatedBuilder(
+            animation: _curve,
+            builder: (ctx, child) {
+              final t = _curve.value;
+              final tC = t.clamp(0.0, 1.0);
+              return Transform(
+                transform: Matrix4.identity()
+                  ..translate(0.0, 3.0 * tC)
+                  ..scale(1.0 - 0.07 * t),
+                alignment: Alignment.center,
+                child: Container(
+                  height: 65,
+                  decoration: BoxDecoration(
+                    color: _bgColor(tC),
+                    borderRadius: BorderRadius.circular(5),
+                    boxShadow: [
                       BoxShadow(
-                        color: Color(0x55000000),
-                        offset: Offset(0, 2),
-                        blurRadius: 2,
+                        color: Color.fromRGBO(0, 0, 0, 0.33 * (1 - tC)),
+                        offset: Offset(0, (1 - tC) * 3),
+                        blurRadius: (1 - tC) * 3,
                       ),
                     ],
-            ),
-            alignment: Alignment.center,
+                  ),
+                  alignment: Alignment.center,
+                  child: child,
+                ),
+              );
+            },
             child: DefaultTextStyle(
-              style: TextStyle(
-                  color: widget.theme.actionKeyText, fontSize: 14),
+              style:
+                  TextStyle(color: widget.theme.actionKeyText, fontSize: 14),
               child: widget.child,
             ),
           ),

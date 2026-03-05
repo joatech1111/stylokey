@@ -63,6 +63,17 @@ class FlutterImeService : InputMethodService() {
                             ic?.endBatchEdit()
                             result.success(null)
                         }
+                        // 자판 전환 시 composing을 원자적으로 commit + 종료
+                        "switchModeCommit" -> {
+                            val text = call.argument<String>("text") ?: ""
+                            ic?.beginBatchEdit()
+                            if (text.isNotEmpty()) {
+                                ic?.commitText(text, 1)
+                            }
+                            ic?.finishComposingText()
+                            ic?.endBatchEdit()
+                            result.success(null)
+                        }
                         "deleteSurroundingText" -> {
                             ic?.deleteSurroundingText(1, 0)
                             result.success(null)
@@ -111,7 +122,7 @@ class FlutterImeService : InputMethodService() {
 
         // ── Wrap in a FrameLayout with a fixed keyboard height ──────────────
         val density = resources.displayMetrics.density
-        val keyboardHeight = (317 * density).toInt()
+        val keyboardHeight = (350 * density).toInt()
 
         return FrameLayout(this).apply {
             setBackgroundColor(0xFFD1D5DB.toInt())
@@ -128,6 +139,8 @@ class FlutterImeService : InputMethodService() {
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         flutterEngine?.lifecycleChannel?.appIsResumed()
+        // 새 입력 필드 포커스 시 Flutter 컴포저 상태 초기화
+        channel?.invokeMethod("reset", null)
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {

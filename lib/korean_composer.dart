@@ -207,7 +207,18 @@ class KoreanComposer {
   bool replaceCurrentConsonant(String newConsonant) {
     // Case 1: jongsung just set
     if (_jong_.isNotEmpty && _jongIdx.containsKey(newConsonant)) {
-      _jong_ = newConsonant;
+      // If current jong is a compound (e.g. ㄵ = ㄴ+ㅈ), the first input
+      // formed a compound받침, but the user intended to start a new syllable
+      // with the upgraded consonant. Split it: keep the first part as jong,
+      // finalize current syllable, start a new syllable with newConsonant.
+      final split = _jongSplit[_jong_];
+      if (split != null) {
+        _jong_ = split[0];
+        _finalize();
+        _cho_ = newConsonant;
+      } else {
+        _jong_ = newConsonant;
+      }
       return true;
     }
     // Case 2: lone chosung (no vowel yet)
