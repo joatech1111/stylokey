@@ -166,7 +166,10 @@ const _emojiData = [
 enum KeyboardMode { english, korean, number, emoji }
 
 class KeyboardView extends StatefulWidget {
-  const KeyboardView({super.key});
+  /// 제공하면 MethodChannel 대신 이 컨트롤러에 직접 텍스트를 기록합니다 (프리뷰 모드).
+  final TextEditingController? previewController;
+
+  const KeyboardView({super.key, this.previewController});
 
   @override
   State<KeyboardView> createState() => _KeyboardViewState();
@@ -193,36 +196,23 @@ class _KeyboardViewState extends State<KeyboardView> {
     'ㄱ': 'ㄲ', 'ㄷ': 'ㄸ', 'ㅂ': 'ㅃ', 'ㅅ': 'ㅆ', 'ㅈ': 'ㅉ',
   };
 
-  // ── Prediction ────────────────────────────────────────────────────────────
-  List<String> _wordHistory = [];
-  String _wordBuffer = '';
+  // ── Preview mode ──────────────────────────────────────────────────────────
+  bool get _isPreview => widget.previewController != null;
+  String _previewComposing = '';
 
-  static const _commonKoreanWords = [
-    '안녕하세요', '감사합니다', '괜찮아요', '알겠습니다', '네', '아니요',
-    '좋아요', '사랑해요', '보고싶어요', '잘자요', '잘지내요', '화이팅',
-    'ㅋㅋ', 'ㅎㅎ', 'ㅋㅋㅋ', '오케이', '맞아요', '모르겠어요',
-    '뭐해요', '언제봐요', '조심해요', '파이팅', '축하해요', '미안해요',
-    '잠깐만요', '왜요', '어떻게', '누구예요', '얼마예요',
-    '수고하셨습니다', '잘부탁드립니다', '어서오세요',
-  ];
-
-  List<String> get _suggestions {
-    if (_mode == KeyboardMode.emoji || _mode == KeyboardMode.number) return [];
-
-    final composing =
-        _mode == KeyboardMode.korean ? _composer.composing : '';
-
-    if (composing.length >= 1) {
-      final candidates = [..._wordHistory, ..._commonKoreanWords];
-      final matches = candidates
-          .where((w) => w.startsWith(composing) && w != composing)
-          .toSet()
-          .take(3)
-          .toList();
-      if (matches.isNotEmpty) return matches;
+  String get _previewBase {
+    final ctrl = widget.previewController!;
+    if (_previewComposing.isNotEmpty && ctrl.text.endsWith(_previewComposing)) {
+      return ctrl.text.substring(0, ctrl.text.length - _previewComposing.length);
     }
+    return ctrl.text;
+  }
 
-    return _wordHistory.take(3).toList();
+  void _previewUpdate(String base, String composing) {
+    _previewComposing = composing;
+    final ctrl = widget.previewController!;
+    ctrl.text = base + composing;
+    ctrl.selection = TextSelection.collapsed(offset: ctrl.text.length);
   }
 
   KeyboardTheme get _theme => KeyboardTheme.presets[_themeIndex];
@@ -239,7 +229,6 @@ class _KeyboardViewState extends State<KeyboardView> {
   Future<dynamic> _handleNativeCall(MethodCall call) async {
     if (call.method == 'reset') {
       _composer.reset();
-      _wordBuffer = '';
       _lastKey = null;
       _tapCount = 0;
       _ssangMode = false;
@@ -248,13 +237,16 @@ class _KeyboardViewState extends State<KeyboardView> {
   }
 
   Future<void> _loadSettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _hapticEnabled = prefs.getBool('haptic') ?? true;
-      _soundEnabled = prefs.getBool('sound') ?? false;
-      _themeIndex = prefs.getInt('theme') ?? 0;
-      _wordHistory = prefs.getStringList('wordHistory') ?? [];
-    });
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      setState(() {
+        _hapticEnabled = prefs.getBool('haptic') ?? true;
+        _soundEnabled = prefs.getBool('sound') ?? false;
+        _themeIndex = prefs.getInt('theme') ?? 0;
+      });
+    } catch (_) {
+      // 프리뷰 모드 등 플러그인 미등록 환경에서는 기본값 사용
+    }
   }
 
   Future<void> _saveBool(String key, bool value) async {
@@ -268,36 +260,9 @@ class _KeyboardViewState extends State<KeyboardView> {
   }
 
   void _triggerFeedback() {
+    if (_isPreview) return;
     if (_hapticEnabled) _channel.invokeMethod('vibrate');
     if (_soundEnabled) _channel.invokeMethod('playKeySound');
-  }
-
-  // ── Word history ──────────────────────────────────────────────────────────
-
-  void _trackCommit(String text) {
-    for (var i = 0; i < text.length; i++) {
-      final ch = text[i];
-      if (ch == ' ' || ch == '\n') {
-        if (_wordBuffer.length >= 2) _addToHistory(_wordBuffer);
-        _wordBuffer = '';
-      } else {
-        _wordBuffer += ch;
-      }
-    }
-  }
-
-  void _addToHistory(String word) {
-    final w = word.trim();
-    if (w.length < 2) return;
-    _wordHistory.remove(w);
-    _wordHistory.insert(0, w);
-    if (_wordHistory.length > 30) _wordHistory = _wordHistory.sublist(0, 30);
-    _saveWordHistory();
-  }
-
-  Future<void> _saveWordHistory() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList('wordHistory', _wordHistory);
   }
 
   // ── Tap detection ─────────────────────────────────────────────────────────
@@ -337,31 +302,57 @@ class _KeyboardViewState extends State<KeyboardView> {
   static const _englishRows = [
     ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'],
     ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', "'"],
-    ['@', 'z', 'x', 'c', 'v', 'b', 'n', 'm', '?', '.,'],
+    ['@', 'z', 'x', 'c', 'v', 'b', 'n', 'm', '.,', '?'],
   ];
 
   // ── IME communication ─────────────────────────────────────────────────────
 
   Future<void> _commitText(String text) async {
     if (text.isEmpty) return;
-    _trackCommit(text);
-    await _channel.invokeMethod('commitText', {'text': text});
+    if (_isPreview) {
+      setState(() => _previewUpdate(_previewBase + text, ''));
+    } else {
+      await _channel.invokeMethod('commitText', {'text': text});
+    }
   }
 
   Future<void> _setComposing(String text) async {
-    await _channel.invokeMethod('setComposingText', {'text': text});
+    if (_isPreview) {
+      setState(() => _previewUpdate(_previewBase, text));
+    } else {
+      await _channel.invokeMethod('setComposingText', {'text': text});
+    }
   }
 
   Future<void> _replaceComposing(String text) async {
-    await _channel.invokeMethod('replaceComposing', {'text': text});
+    if (_isPreview) {
+      setState(() => _previewUpdate(_previewBase, text));
+    } else {
+      await _channel.invokeMethod('replaceComposing', {'text': text});
+    }
   }
 
   Future<void> _deleteBack() async {
-    await _channel.invokeMethod('deleteSurroundingText');
+    if (_isPreview) {
+      setState(() {
+        if (_previewComposing.isNotEmpty) {
+          _previewUpdate(_previewBase, '');
+        } else {
+          final t = widget.previewController!.text;
+          if (t.isNotEmpty) _previewUpdate(t.substring(0, t.length - 1), '');
+        }
+      });
+    } else {
+      await _channel.invokeMethod('deleteSurroundingText');
+    }
   }
 
   Future<void> _sendAction() async {
-    await _channel.invokeMethod('performEditorAction');
+    if (_isPreview) {
+      setState(() => _previewUpdate('$_previewBase\n', ''));
+    } else {
+      await _channel.invokeMethod('performEditorAction');
+    }
   }
 
   // ── Key handlers ──────────────────────────────────────────────────────────
@@ -485,27 +476,15 @@ class _KeyboardViewState extends State<KeyboardView> {
     }
   }
 
-  Future<void> _onSuggestionTap(String word) async {
-    _triggerFeedback();
-    if (_mode == KeyboardMode.korean) {
-      final committed = _composer.commitAll();
-      if (committed.isNotEmpty) {
-        await _channel.invokeMethod('commitText', {'text': committed});
-      }
-      await _setComposing('');
-    }
-    _wordBuffer = '';
-    _addToHistory(word);
-    await _channel.invokeMethod('commitText', {'text': '$word '});
-    setState(() {});
-  }
-
   Future<void> _commitKoreanAndSwitch(void Function() switchFn) async {
     if (_mode == KeyboardMode.korean) {
       final text = _composer.commitAll();
-      _trackCommit(text);
-      // 원자적으로 composing commit + 종료 (두 단계 비동기 타이밍 문제 방지)
-      await _channel.invokeMethod('switchModeCommit', {'text': text});
+      if (_isPreview) {
+        setState(() => _previewUpdate(_previewBase + text, ''));
+      } else {
+        // 원자적으로 composing commit + 종료 (두 단계 비동기 타이밍 문제 방지)
+        await _channel.invokeMethod('switchModeCommit', {'text': text});
+      }
     }
     _ssangMode = false;
     _lastKey = null;  // 더블탭 상태 초기화 (모드 전환 후 오입력 방지)
@@ -544,6 +523,23 @@ class _KeyboardViewState extends State<KeyboardView> {
 
   void _onCaps() => setState(() => _capsLock = !_capsLock);
 
+  /// 쌍 버튼: 현재 조합 중인 자음이 있으면 즉시 쌍자음으로 업그레이드,
+  /// 없으면 기존 모드 토글 (다음 자음을 쌍자음으로 입력).
+  Future<void> _onSsang() async {
+    final cur = _composer.currentConsonant;
+    if (cur.isNotEmpty && _ssangMap.containsKey(cur)) {
+      final doubled = _ssangMap[cur]!;
+      if (_composer.replaceCurrentConsonant(doubled)) {
+        _lastKey = null;
+        _tapCount = 0;
+        await _replaceComposing(_composer.composing);
+        setState(() {});
+        return;
+      }
+    }
+    setState(() => _ssangMode = !_ssangMode);
+  }
+
   void _toggleEmoji() {
     if (_mode == KeyboardMode.emoji) {
       _lastKey = null;
@@ -561,7 +557,6 @@ class _KeyboardViewState extends State<KeyboardView> {
 
   @override
   Widget build(BuildContext context) {
-    // suggestion bar(32) + keys area(318) = 350 total
     return AnimatedContainer(
       duration: const Duration(milliseconds: 200),
       color: _theme.background,
@@ -569,8 +564,8 @@ class _KeyboardViewState extends State<KeyboardView> {
         height: 350,
         child: Column(
           children: [
-            if (!_showingSettings && _mode != KeyboardMode.emoji)
-              _buildSuggestionBar(), // 32px — 키 영역과 별도
+            // ── 상단 툴바: 이모지 · 설정 ──────────────────────────────
+            if (!_showingSettings) _buildToolbar(),
             Expanded(
               child: _showingSettings
                   ? _buildSettingsPanel()
@@ -590,53 +585,38 @@ class _KeyboardViewState extends State<KeyboardView> {
     );
   }
 
-  // ── Suggestion bar ────────────────────────────────────────────────────────
+  // ── 상단 툴바 ─────────────────────────────────────────────────────────────
 
-  Widget _buildSuggestionBar() {
-    final suggestions = _suggestions;
+  Widget _buildToolbar() {
+    final isEmoji = _mode == KeyboardMode.emoji;
     return SizedBox(
       height: 32,
-      child: suggestions.isEmpty
-          ? Center(
+      child: Row(
+        children: [
+          // 이모지 토글
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _toggleEmoji,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
               child: Text(
-                '예측 입력',
-                style: TextStyle(
-                  fontSize: 11,
-                  color: _theme.charKeyText.withOpacity(0.3),
-                ),
+                isEmoji ? '⌨️' : '😊',
+                style: const TextStyle(fontSize: 17),
               ),
-            )
-          : Row(
-              children: suggestions
-                  .map((w) => Expanded(
-                        child: GestureDetector(
-                          onTap: () => _onSuggestionTap(w),
-                          child: Container(
-                            margin: const EdgeInsets.symmetric(
-                                horizontal: 4, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: _theme.charKey,
-                              borderRadius: BorderRadius.circular(4),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.1),
-                                  blurRadius: 1,
-                                  offset: const Offset(0, 1),
-                                ),
-                              ],
-                            ),
-                            alignment: Alignment.center,
-                            child: Text(
-                              w,
-                              style: TextStyle(
-                                  fontSize: 13, color: _theme.charKeyText),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ),
-                      ))
-                  .toList(),
             ),
+          ),
+          const Spacer(),
+          // 설정
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => setState(() => _showingSettings = true),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+              child: Icon(Icons.settings, size: 17, color: _theme.charKeyText.withOpacity(0.5)),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -869,7 +849,7 @@ class _KeyboardViewState extends State<KeyboardView> {
           // 쌍자음(한국어) / 대문자(영어) / 빈칸(그 외)
           _ActionKey(
             onTap: isKorean
-                ? () => setState(() => _ssangMode = !_ssangMode)
+                ? _onSsang
                 : isEnglish
                     ? _onCaps
                     : () {},
@@ -892,28 +872,8 @@ class _KeyboardViewState extends State<KeyboardView> {
             onTap: () => _onKey(' '),
             onTapDown: _triggerFeedback,
             theme: _theme,
-            flex: isEmoji ? 4 : 3,
+            flex: 6,
             child: const Text(' ', style: TextStyle(fontSize: 14)),
-          ),
-          // Emoji toggle
-          _ActionKey(
-            onTap: _toggleEmoji,
-            onTapDown: _triggerFeedback,
-            theme: _theme,
-            active: isEmoji,
-            flex: 1,
-            child: Text(
-              isEmoji ? '⌨️' : '😊',
-              style: const TextStyle(fontSize: 16),
-            ),
-          ),
-          _ActionKey(
-            onTap: () => setState(() => _showingSettings = true),
-            onTapDown: _triggerFeedback,
-            theme: _theme,
-            flex: 1,
-            child:
-                Icon(Icons.settings, size: 18, color: _theme.actionKeyText),
           ),
           _ActionKey(
             onTap: _sendAction,

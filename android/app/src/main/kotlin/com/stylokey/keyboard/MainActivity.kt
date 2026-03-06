@@ -18,31 +18,57 @@ import com.google.android.gms.ads.AdRequest
 import com.google.android.gms.ads.AdSize
 import com.google.android.gms.ads.AdView
 import com.google.android.gms.ads.MobileAds
+import io.flutter.FlutterInjector
+import io.flutter.embedding.android.FlutterTextureView
+import io.flutter.embedding.android.FlutterView
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.embedding.engine.dart.DartExecutor
 
 class MainActivity : Activity() {
 
     private var adView: AdView? = null
+    private var previewEngine: FlutterEngine? = null
+    private var previewFlutterView: FlutterView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // AdMob 초기화 (앱 시작 시 한 번만)
         MobileAds.initialize(this)
+
+        // 키보드 미리보기용 Flutter 엔진 초기화
+        previewEngine = FlutterEngine(this).also { engine ->
+            engine.dartExecutor.executeDartEntrypoint(
+                DartExecutor.DartEntrypoint(
+                    FlutterInjector.instance().flutterLoader().findAppBundlePath(),
+                    "previewMain"
+                )
+            )
+            engine.lifecycleChannel.appIsResumed()
+        }
+        previewFlutterView = FlutterView(this, FlutterTextureView(this)).also { fv ->
+            fv.attachToFlutterEngine(previewEngine!!)
+        }
+
         setContentView(buildUI())
     }
 
     override fun onResume() {
         super.onResume()
         adView?.resume()
+        previewEngine?.lifecycleChannel?.appIsResumed()
         setContentView(buildUI())
     }
 
     override fun onPause() {
         adView?.pause()
+        previewEngine?.lifecycleChannel?.appIsPaused()
         super.onPause()
     }
 
     override fun onDestroy() {
         adView?.destroy()
+        previewFlutterView?.detachFromFlutterEngine()
+        previewEngine?.destroy()
+        previewEngine = null
         super.onDestroy()
     }
 
@@ -73,7 +99,7 @@ class MainActivity : Activity() {
         // ── 스크롤 콘텐츠 영역 ──────────────────────────────────────
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(40), dp(20), dp(40))
+            setPadding(dp(20), dp(40), dp(20), dp(20))
         }
 
         container.addView(TextView(this).apply {
@@ -134,18 +160,36 @@ class MainActivity : Activity() {
             })
         }
 
+        // ── 설정 카드는 스크롤 영역 안에만 ──────────────────────────
         val scrollView = ScrollView(this).apply {
             setBackgroundColor(Color.parseColor("#F3F4F6"))
             addView(container)
         }
         root.addView(scrollView, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f  // weight=1 로 남은 공간 채움
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
         ))
+
+        // ── 키보드 미리보기 (스크롤 영역 밖 고정) ────────────────────
+        root.addView(TextView(this).apply {
+            text = "키보드 미리보기"
+            textSize = 13f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#6B7280"))
+            setBackgroundColor(Color.parseColor("#F3F4F6"))
+            setPadding(dp(20), dp(10), dp(20), dp(6))
+        })
+
+        previewFlutterView?.let { fv ->
+            (fv.parent as? ViewGroup)?.removeView(fv)
+            root.addView(fv, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(422)  // 텍스트창 72 + 키보드 350
+            ))
+        }
 
         // ── 하단 배너 광고 ──────────────────────────────────────────
         adView = AdView(this).apply {
             setAdSize(AdSize.BANNER)
-            // TODO: AdMob 콘솔에서 발급받은 실제 광고 단위 ID로 교체하세요
             adUnitId = "ca-app-pub-3940256099942544/6300978111" // 테스트 ID
             loadAd(AdRequest.Builder().build())
         }

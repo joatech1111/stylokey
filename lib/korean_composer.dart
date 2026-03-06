@@ -229,6 +229,14 @@ class KoreanComposer {
     return false;
   }
 
+  /// 현재 조합 위치의 자음을 반환합니다 (쌍자음 업그레이드 판단용).
+  /// 받침이 있으면 받침, 초성만 있으면 초성, 없으면 빈 문자열.
+  String get currentConsonant {
+    if (_jong_.isNotEmpty) return _jong_;
+    if (_cho_.isNotEmpty && _jung_.isEmpty) return _cho_;
+    return '';
+  }
+
   /// Commit everything and reset.
   String commitAll() {
     _finalize();
